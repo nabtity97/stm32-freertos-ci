@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "string.h"
+#include "stdint.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,33 +43,33 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-/* Definitions for taskBlueLed */
-osThreadId_t taskBlueLedHandle;
-const osThreadAttr_t taskBlueLed_attributes = {
-  .name = "taskBlueLed",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
-/* Definitions for taskGreenLed */
-osThreadId_t taskGreenLedHandle;
-const osThreadAttr_t taskGreenLed_attributes = {
-  .name = "taskGreenLed",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
-};
-/* Definitions for taskRedLed */
-osThreadId_t taskRedLedHandle;
-const osThreadAttr_t taskRedLed_attributes = {
-  .name = "taskRedLed",
+UART_HandleTypeDef huart2;
+
+/* Definitions for ProdFastTask */
+osThreadId_t ProdFastTaskHandle;
+const osThreadAttr_t ProdFastTask_attributes = {
+  .name = "ProdFastTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for Task4 */
-osThreadId_t Task4Handle;
-const osThreadAttr_t Task4_attributes = {
-  .name = "Task4",
+/* Definitions for ProdSlowTask */
+osThreadId_t ProdSlowTaskHandle;
+const osThreadAttr_t ProdSlowTask_attributes = {
+  .name = "ProdSlowTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+/* Definitions for ConsumerTask */
+osThreadId_t ConsumerTaskHandle;
+const osThreadAttr_t ConsumerTask_attributes = {
+  .name = "ConsumerTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for myQueue01 */
+osMessageQueueId_t myQueue01Handle;
+const osMessageQueueAttr_t myQueue01_attributes = {
+  .name = "myQueue01"
 };
 /* USER CODE BEGIN PV */
 
@@ -76,10 +78,10 @@ const osThreadAttr_t Task4_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-void StartTaskBlueLed(void *argument);
-void StartTaskGreenLed(void *argument);
-void StartTaskRedLed(void *argument);
-void StartTask04(void *argument);
+static void MX_USART2_UART_Init(void);
+void StartProdFastTask(void *argument);
+void StartProdSlowTask(void *argument);
+void StartConsuemerTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -87,9 +89,21 @@ void StartTask04(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define RED_LED     GPIO_PIN_5
-#define GREEN_LED   GPIO_PIN_3
-#define BLUE_LED    GPIO_PIN_10
+typedef struct
+{
+    uint32_t sequence;
+    uint32_t timestamp;
+    uint8_t  source;
+    int32_t  value;
+} AppMessage_t;
+
+typedef enum
+{
+    SOURCE_FAST = 0,
+    SOURCE_SLOW
+} MessageSource_t;
+
+uint32_t num_of_reported_erros = 0;
 
 /* USER CODE END 0 */
 
@@ -122,7 +136,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
 
   /* USER CODE END 2 */
 
@@ -141,22 +157,23 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* creation of myQueue01 */
+  myQueue01Handle = osMessageQueueNew (50, sizeof(AppMessage_t), &myQueue01_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of taskBlueLed */
-  taskBlueLedHandle = osThreadNew(StartTaskBlueLed, NULL, &taskBlueLed_attributes);
+  /* creation of ProdFastTask */
+  ProdFastTaskHandle = osThreadNew(StartProdFastTask, NULL, &ProdFastTask_attributes);
 
-  /* creation of taskGreenLed */
-  taskGreenLedHandle = osThreadNew(StartTaskGreenLed, NULL, &taskGreenLed_attributes);
+  /* creation of ProdSlowTask */
+  ProdSlowTaskHandle = osThreadNew(StartProdSlowTask, NULL, &ProdSlowTask_attributes);
 
-  /* creation of taskRedLed */
-  taskRedLedHandle = osThreadNew(StartTaskRedLed, NULL, &taskRedLed_attributes);
-
-  /* creation of Task4 */
-  Task4Handle = osThreadNew(StartTask04, NULL, &Task4_attributes);
+  /* creation of ConsumerTask */
+  ConsumerTaskHandle = osThreadNew(StartConsuemerTask, NULL, &ConsumerTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -229,6 +246,39 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -273,79 +323,110 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartTaskBlueLed */
+/* USER CODE BEGIN Header_StartProdFastTask */
 /**
-  * @brief  Function implementing the taskBlueLed thread.
+  * @brief  Function implementing the ProdFastTask thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartTaskBlueLed */
-void StartTaskBlueLed(void *argument)
+/* USER CODE END Header_StartProdFastTask */
+void StartProdFastTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  AppMessage_t my_message = { .source = SOURCE_FAST };
+  int32_t value = 1;
+  uint8_t sequence = 1;
   /* Infinite loop */
   for(;;)
   {
-	HAL_GPIO_TogglePin(GPIOA, blue_led_Pin);
-    osDelay(2000);
+	HAL_GPIO_TogglePin(red_led_GPIO_Port, red_led_Pin);
+	my_message.sequence = sequence;
+	my_message.timestamp = osKernelGetTickCount();
+	my_message.value = value;
+
+	// add the reading to the queue
+	if(osOK != osMessageQueuePut(myQueue01Handle, &my_message, 0, 0))
+	{
+		num_of_reported_erros++;
+	}
+	sequence++;
+	value += 2;
+    osDelay(1000);
   }
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartTaskGreenLed */
+/* USER CODE BEGIN Header_StartProdSlowTask */
 /**
-* @brief Function implementing the taskGreenLed thread.
+* @brief Function implementing the ProdSlowTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartTaskGreenLed */
-void StartTaskGreenLed(void *argument)
+/* USER CODE END Header_StartProdSlowTask */
+void StartProdSlowTask(void *argument)
 {
-  /* USER CODE BEGIN StartTaskGreenLed */
+  /* USER CODE BEGIN StartProdSlowTask */
+  AppMessage_t my_message = { .source = SOURCE_SLOW };
+  int32_t value = 2;
+  uint8_t sequence = 1;
   /* Infinite loop */
   for(;;)
   {
-	HAL_GPIO_TogglePin(GPIOB, green_led_Pin);
-    osDelay(1000);
+	HAL_GPIO_TogglePin(blue_led_GPIO_Port, blue_led_Pin);
+	my_message.sequence = sequence;
+	my_message.timestamp = osKernelGetTickCount();
+	my_message.value = value;
+
+	// add the reading to the queue
+	if(osOK != osMessageQueuePut(myQueue01Handle, &my_message, 0, 0))
+	{
+		num_of_reported_erros++;
+	}
+	sequence++;
+	value += 10;
+	osDelay(2000);
   }
-  /* USER CODE END StartTaskGreenLed */
+  /* USER CODE END StartProdSlowTask */
 }
 
-/* USER CODE BEGIN Header_StartTaskRedLed */
+/* USER CODE BEGIN Header_StartConsuemerTask */
 /**
-* @brief Function implementing the taskRedLed thread.
+* @brief Function implementing the ConsumerTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartTaskRedLed */
-void StartTaskRedLed(void *argument)
+/* USER CODE END Header_StartConsuemerTask */
+void StartConsuemerTask(void *argument)
 {
-  /* USER CODE BEGIN StartTaskRedLed */
-  /* Infinite loop */
-  for(;;)
-  {
-	HAL_GPIO_TogglePin(GPIOB, red_led_Pin);
-    osDelay(500);
-  }
-  /* USER CODE END StartTaskRedLed */
-}
+  /* USER CODE BEGIN StartConsuemerTask */
+  AppMessage_t received_message = { 0 };
+  char uart_buffer[128];
 
-/* USER CODE BEGIN Header_StartTask04 */
-/**
-* @brief Function implementing the Task4 thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTask04 */
-void StartTask04(void *argument)
-{
-  /* USER CODE BEGIN StartTask04 */
+  uint8_t error_message[] = "FAILED TO READ THE MESSAGE FROM THE QUEUE\r\n";
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	if(osOK == osMessageQueueGet(myQueue01Handle, &received_message, 0, 0))
+	{
+	  int len = snprintf(uart_buffer,
+						 sizeof(uart_buffer),
+						 "Seq: %lu, Tick: %lu, Source: %lu, Value: %ld\r\n",
+						 (unsigned long)received_message.sequence,
+						 (unsigned long)received_message.timestamp,
+						 (unsigned long)received_message.source,
+						 (long)received_message.value);
+
+	  HAL_UART_Transmit(&huart2, (uint8_t *)uart_buffer, len, HAL_MAX_DELAY);
+	}
+	else
+	{
+	  HAL_UART_Transmit(&huart2, error_message, sizeof(error_message) - 1, HAL_MAX_DELAY);
+	}
+
+	osDelay(3000);
   }
-  /* USER CODE END StartTask04 */
+  /* USER CODE END StartConsuemerTask */
 }
 
 /**
