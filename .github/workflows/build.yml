@@ -1,0 +1,30 @@
+name: STM32 Build
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: xanderhendriks/stm32cubeide:16.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Import project
+        run: |
+          stm32cubeide \
+            --launcher.suppressErrors \
+            -nosplash \
+            -application org.eclipse.cdt.managedbuilder.core.headlessbuild \
+            -data /tmp/stm-workspace \
+            -import $GITHUB_WORKSPACE
+
+      - name: Build firmware
+        run: |
+          headless-build.sh \
+            -data /tmp/stm-workspace \
+            -build test_freeRTOS_f411re/Debug
