@@ -1,0 +1,10 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+
+# Debug launch configuration
+*.launch
+
+# OS files
+.DS_Store
+Thumbs.db
