@@ -45,31 +45,17 @@
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
 
-/* Definitions for ProdFastTask */
-osThreadId_t ProdFastTaskHandle;
-const osThreadAttr_t ProdFastTask_attributes = {
-  .name = "ProdFastTask",
+/* Definitions for ProcessingTask */
+osThreadId_t ProcessingTaskHandle;
+const osThreadAttr_t ProcessingTask_attributes = {
+  .name = "ProcessingTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for ProdSlowTask */
-osThreadId_t ProdSlowTaskHandle;
-const osThreadAttr_t ProdSlowTask_attributes = {
-  .name = "ProdSlowTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
-};
-/* Definitions for ConsumerTask */
-osThreadId_t ConsumerTaskHandle;
-const osThreadAttr_t ConsumerTask_attributes = {
-  .name = "ConsumerTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
-/* Definitions for myQueue01 */
-osMessageQueueId_t myQueue01Handle;
-const osMessageQueueAttr_t myQueue01_attributes = {
-  .name = "myQueue01"
+/* Definitions for ButtonPressesSem */
+osSemaphoreId_t ButtonPressesSemHandle;
+const osSemaphoreAttr_t ButtonPressesSem_attributes = {
+  .name = "ButtonPressesSem"
 };
 /* USER CODE BEGIN PV */
 
@@ -79,9 +65,7 @@ const osMessageQueueAttr_t myQueue01_attributes = {
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-void StartProdFastTask(void *argument);
-void StartProdSlowTask(void *argument);
-void StartConsuemerTask(void *argument);
+void ProcessingTaskRoutine(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -91,19 +75,14 @@ void StartConsuemerTask(void *argument);
 /* USER CODE BEGIN 0 */
 typedef struct
 {
-    uint32_t sequence;
     uint32_t timestamp;
-    uint8_t  source;
     int32_t  value;
 } AppMessage_t;
 
-typedef enum
-{
-    SOURCE_FAST = 0,
-    SOURCE_SLOW
-} MessageSource_t;
-
-uint32_t num_of_reported_erros = 0;
+uint32_t num_of_sensor_events 	 	= 0;
+uint32_t num_of_events_processed 	= 0;
+uint32_t num_of_sem_release_fail    = 0;
+uint32_t diff  						= 0;
 
 /* USER CODE END 0 */
 
@@ -149,6 +128,10 @@ int main(void)
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
+  /* Create the semaphores(s) */
+  /* creation of ButtonPressesSem */
+  ButtonPressesSemHandle = osSemaphoreNew(1, 0, &ButtonPressesSem_attributes);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
@@ -157,23 +140,13 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* creation of myQueue01 */
-  myQueue01Handle = osMessageQueueNew (50, sizeof(AppMessage_t), &myQueue01_attributes);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of ProdFastTask */
-  ProdFastTaskHandle = osThreadNew(StartProdFastTask, NULL, &ProdFastTask_attributes);
-
-  /* creation of ProdSlowTask */
-  ProdSlowTaskHandle = osThreadNew(StartProdSlowTask, NULL, &ProdSlowTask_attributes);
-
-  /* creation of ConsumerTask */
-  ConsumerTaskHandle = osThreadNew(StartConsuemerTask, NULL, &ConsumerTask_attributes);
+  /* creation of ProcessingTask */
+  ProcessingTaskHandle = osThreadNew(ProcessingTaskRoutine, NULL, &ProcessingTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -291,6 +264,7 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -299,6 +273,12 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, green_led_Pin|red_led_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : blue_button_Pin */
+  GPIO_InitStruct.Pin = blue_button_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(blue_button_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : blue_led_Pin */
   GPIO_InitStruct.Pin = blue_led_Pin;
@@ -314,119 +294,51 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == GPIO_PIN_13)
+    {
+	  osSemaphoreRelease(ButtonPressesSemHandle);
+    }
+}
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartProdFastTask */
+/* USER CODE BEGIN Header_ProcessingTaskRoutine */
 /**
-  * @brief  Function implementing the ProdFastTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartProdFastTask */
-void StartProdFastTask(void *argument)
+* @brief Function implementing the ProcessingTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_ProcessingTaskRoutine */
+void ProcessingTaskRoutine(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  AppMessage_t my_message = { .source = SOURCE_FAST };
-  int32_t value = 1;
-  uint8_t sequence = 1;
-  /* Infinite loop */
-  for(;;)
-  {
-	HAL_GPIO_TogglePin(red_led_GPIO_Port, red_led_Pin);
-	my_message.sequence = sequence;
-	my_message.timestamp = osKernelGetTickCount();
-	my_message.value = value;
+//   uint32_t previous_tick = osKernelGetTickCount();
+	uint8_t message_buff[20] = "button pressed\n";
+    for (;;)
+    {
+//    	uint32_t current_tick = osKernelGetTickCount();
+//		diff = current_tick - previous_tick;
+//		previous_tick = current_tick;
 
-	// add the reading to the queue
-	if(osOK != osMessageQueuePut(myQueue01Handle, &my_message, 0, 0))
-	{
-		num_of_reported_erros++;
-	}
-	sequence++;
-	value += 2;
-    osDelay(1000);
-  }
+//        num_of_sensor_events++;
+        if (osOK == osSemaphoreAcquire(ButtonPressesSemHandle, osWaitForever))
+        {
+            HAL_UART_Transmit(&huart2, message_buff , strlen((char *)message_buff), HAL_MAX_DELAY);
+            HAL_GPIO_TogglePin(red_led_GPIO_Port, red_led_Pin);
+        }
+    }
   /* USER CODE END 5 */
-}
-
-/* USER CODE BEGIN Header_StartProdSlowTask */
-/**
-* @brief Function implementing the ProdSlowTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartProdSlowTask */
-void StartProdSlowTask(void *argument)
-{
-  /* USER CODE BEGIN StartProdSlowTask */
-  AppMessage_t my_message = { .source = SOURCE_SLOW };
-  int32_t value = 2;
-  uint8_t sequence = 1;
-  /* Infinite loop */
-  for(;;)
-  {
-	HAL_GPIO_TogglePin(blue_led_GPIO_Port, blue_led_Pin);
-	my_message.sequence = sequence;
-	my_message.timestamp = osKernelGetTickCount();
-	my_message.value = value;
-
-	// add the reading to the queue
-	if(osOK != osMessageQueuePut(myQueue01Handle, &my_message, 0, 0))
-	{
-		num_of_reported_erros++;
-	}
-	sequence++;
-	value += 10;
-	osDelay(2000);
-  }
-  /* USER CODE END StartProdSlowTask */
-}
-
-/* USER CODE BEGIN Header_StartConsuemerTask */
-/**
-* @brief Function implementing the ConsumerTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartConsuemerTask */
-void StartConsuemerTask(void *argument)
-{
-  /* USER CODE BEGIN StartConsuemerTask */
-  AppMessage_t received_message = { 0 };
-  char uart_buffer[128];
-
-  uint8_t error_message[] = "FAILED TO READ THE MESSAGE FROM THE QUEUE\r\n";
-
-  /* Infinite loop */
-  for(;;)
-  {
-	if(osOK == osMessageQueueGet(myQueue01Handle, &received_message, 0, 0))
-	{
-	  int len = snprintf(uart_buffer,
-						 sizeof(uart_buffer),
-						 "Seq: %lu, Tick: %lu, Source: %lu, Value: %ld\r\n",
-						 (unsigned long)received_message.sequence,
-						 (unsigned long)received_message.timestamp,
-						 (unsigned long)received_message.source,
-						 (long)received_message.value);
-
-	  HAL_UART_Transmit(&huart2, (uint8_t *)uart_buffer, len, HAL_MAX_DELAY);
-	}
-	else
-	{
-	  HAL_UART_Transmit(&huart2, error_message, sizeof(error_message) - 1, HAL_MAX_DELAY);
-	}
-
-	osDelay(3000);
-  }
-  /* USER CODE END StartConsuemerTask */
 }
 
 /**
